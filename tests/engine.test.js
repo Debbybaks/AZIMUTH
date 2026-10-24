@@ -1,0 +1,14 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import * as E from '../src/engine.js';
+const cfg={departure:'Earth',destination:'Mars',date:'2026-11-15',duration:259,solver:'RK4',stepSize:.5,burn:0,angle:0};
+test('Earth to Mars Hohmann agrees with textbook benchmark',()=>{const h=E.hohmann(1,1.52371);assert.ok(Math.abs(h.time-258.87)<.1);assert.ok(Math.abs(h.total*E.AU/E.DAY/1000-5.594)<.01);});
+test('Elements → state → elements round trip preserves inclined orbit',()=>{const el={a:2.3,e:.32,i:.4,node:.8,omega:1.2,nu:2.1},s=E.elementsState(el),r=E.stateElements(s.r,s.v);for(const k of Object.keys(el))assert.ok(Math.abs(el[k]-r[k])<1e-10,k);});
+test('Lambert state propagated with RK4 meets moving Mars endpoint',()=>{const m=E.simulate(cfg);assert.ok(m.miss*E.AU<200,'arrival error below 200 m');assert.ok(m.maxDrift<1e-8);assert.equal(m.status,'Encounter');assert.ok(m.solution.residual<1e-6);});
+test('Velocity perturbation yields a computed miss, not guaranteed success',()=>{const m=E.simulate({...cfg,burn:100});assert.ok(m.miss*E.AU>1e8);assert.equal(m.status,'Miss');});
+test('RK4 refinement reduces arrival error',()=>{const coarse=E.simulate({...cfg,stepSize:4}),fine=E.simulate({...cfg,stepSize:2});assert.ok(fine.miss<coarse.miss/8);});
+test('Verlet bounds circular-orbit energy while Euler drifts',()=>{const drift=method=>{let r=[1,0,0],v=[0,Math.sqrt(E.MU),0];for(let j=0;j<365;j++){const s=E.step(r,v,1,method);r=s.r;v=s.v;}return Math.abs((E.norm(v)**2/2-E.MU/E.norm(r)+E.MU/2)/(E.MU/2));};assert.ok(drift('Verlet')<drift('Euler')/100);});
+test('Coordinate conversion uses obliquity and north-through-east azimuth',()=>{const c=E.coordinates(0,1,0,0,90);assert.ok(Math.abs(c.ra-6)<1e-9);assert.ok(Math.abs(c.dec-23.43928)<1e-6);assert.ok(Math.abs(c.alt-(90-23.43928))<1e-6);});
+test('Geostationary equatorial period and horizon geometry',()=>{const g=E.groundTrack((Math.cbrt(3.986004418e14*(86164/E.TAU)**2)-6371000)/1000,0,1);assert.ok(Math.abs(g.period-86164)<20);assert.ok(g.footprint>1&&g.footprint<1.5);assert.ok(g.tracks[0].every(p=>p.lat===0));});
+test('Gravity assist conserves v∞ but changes heliocentric speed',()=>{const r=E.gravityAssist(6000,6871000);assert.ok(r.bend>0&&r.bend<Math.PI);assert.ok(Math.abs(r.change)>100);assert.ok(r.e>1);});
+test('Invalid physical and integration inputs are rejected',()=>{assert.throws(()=>E.elementsState({a:1,e:1.2}));assert.throws(()=>E.simulate({...cfg,stepSize:.0001}));assert.throws(()=>E.simulate({...cfg,destination:'Earth'}));assert.throws(()=>E.coordinates(0,0,0));});
