@@ -59,6 +59,7 @@ export function step(r,v,h,method='RK4',mu=MU,force=null){
  const k2r=add(v,mul(a,h/2)),k2v=acc(add(r,mul(v,h/2))),k3r=add(v,mul(k2v,h/2)),k3v=acc(add(r,mul(k2r,h/2))),k4r=add(v,mul(k3v,h)),k4v=acc(add(r,mul(k3r,h)));
  return {r:add(r,mul(add(add(v,mul(k2r,2)),add(mul(k3r,2),k4r)),h/6)),v:add(v,mul(add(add(a,mul(k2v,2)),add(mul(k3v,2),k4v)),h/6)),evals:4};
 }
+export function missionAcceleration(pos,epoch,model='Two-body'){let a=acceleration(pos);if(model==='Restricted N-body')for(const b of bodies.filter(b=>b.a&&!b.parent)){const br=bodyState(b.name,epoch).r,d=sub(br,pos);if(norm(d)>b.radius*1000/AU*2)a=add(a,sub(mul(d,MU*b.mass/norm(d)**3),mul(br,MU*b.mass/norm(br)**3)));}return a;}
 export function simulate(config,override=null){
  const {departure,destination,date,duration,solver='RK4',stepSize=.5,burn=0,angle=0,model='Two-body'}=config;
  if(departure===destination)throw Error('Choose different departure and destination bodies.');
@@ -66,7 +67,7 @@ export function simulate(config,override=null){
  const t0=epochDays(date),start=bodyState(departure,t0),end=bodyState(destination,t0+duration),solution=lambert(start.r,end.r,duration);
  let initial=override||add(solution.v1,[burn*DAY/AU*Math.cos(rad(angle)),burn*DAY/AU*Math.sin(rad(angle)),0]);
  let r=[...start.r],v=[...initial],t=0,points=[],closest=Infinity,closestTime=0,evals=0,maxDrift=0;const energy0=norm(v)**2/2-MU/norm(r),beg=performance.now();
- const force=model==='Restricted N-body'?(pos)=>{let a=acceleration(pos);for(const b of bodies.filter(b=>b.a&&!b.parent)){const br=bodyState(b.name,t0+t).r,d=sub(br,pos);if(norm(d)>b.radius*1000/AU*2){a=add(a,sub(mul(d,MU*b.mass/norm(d)**3),mul(br,MU*b.mass/norm(br)**3)));}}return a;}:null;
+ const force=model==='Restricted N-body'?(pos)=>missionAcceleration(pos,t0+t,model):null;
  const maxSteps=Math.ceil(duration/stepSize);if(maxSteps>200000)throw Error('Step budget exceeded');
  for(let j=0;j<=maxSteps;j++){const target=bodyState(destination,t0+t),distance=norm(sub(r,target.r));if(distance<closest){closest=distance;closestTime=t;}const E=norm(v)**2/2-MU/norm(r),drift=Math.abs((E-energy0)/energy0);maxDrift=Math.max(maxDrift,drift);
  if(j%Math.max(1,Math.floor(maxSteps/1600))===0||t>=duration)points.push({t,r:[...r],v:[...v],distance,energy:E,drift});
@@ -78,3 +79,20 @@ export function coordinates(x,y,z,lat=0,lst=0){const r=Math.hypot(x,y,z);if(!r)t
 export function gravityAssist(vinf,periapsis,mu=3.986004418e14,planetSpeed=29780,heading=0){if(vinf<=0||periapsis<6371000)throw Error('Positive excess speed and periapsis above Earth surface required');const e=1+periapsis*vinf**2/mu,bend=2*Math.asin(1/e),h=rad(heading),incoming=[vinf*Math.cos(h)+planetSpeed,vinf*Math.sin(h),0],outgoing=[vinf*Math.cos(h+bend)+planetSpeed,vinf*Math.sin(h+bend),0];return {e,bend,initial:norm(incoming),final:norm(outgoing),change:norm(outgoing)-norm(incoming)};}
 export function groundTrack(altitude=550,inclination=53,count=1,spacing=0){const radius=6371000+altitude*1000,mu=3.986004418e14,period=TAU*Math.sqrt(radius**3/mu),incl=rad(inclination);let tracks=[];for(let k=0;k<count;k++){let points=[];for(let j=0;j<=360;j++){const t=j/360*period*2,nu=TAU*t/period+k*TAU/count,lon=Math.atan2(Math.sin(nu)*Math.cos(incl),Math.cos(nu))-TAU*t/86164+rad(spacing*k),lat=Math.asin(Math.sin(nu)*Math.sin(incl));points.push({lon:((deg(lon)+540)%360)-180,lat:deg(lat),t});}tracks.push(points);}return {period,tracks,footprint:Math.acos(6371000/radius),radius};}
 export function decay(altitude,mass,area,cd=2.2){const h=altitude*1000,r=6371000+h,rho=3.614e-13*Math.exp(-(h-700000)/88667),v=Math.sqrt(3.986004418e14/r),a=.5*rho*cd*area/mass*v*v,rate=-2*a*r/v;return {rho,drag:a,rate:rate*DAY,period:TAU*r/v};}
+// Fully interacting planar three-body experiment. Unlike restricted mission mode,
+// these states evolve together under mutual Newtonian acceleration.
+export function nbody({duration=800,stepSize=1,massMultiplier=1}={}){
+ if(!(duration>=10&&duration<=3000&&stepSize>=.05&&stepSize<=5&&massMultiplier>=.1&&massMultiplier<=20))throw Error('N-body limits: 10–3000 days, 0.05–5 day steps, mass multiplier 0.1–20.');
+ const masses=[1,.0009543*massMultiplier,3.0035e-6],r=[[0,0,0],[5.2,0,0],[1,0,0]],v=[[0,0,0],[0,Math.sqrt(MU/5.2),0],[0,Math.sqrt(MU),0]],total=masses.reduce((a,b)=>a+b,0);
+ const com=r.reduce((a,x,i)=>add(a,mul(x,masses[i]/total)),[0,0,0]),momentum=v.reduce((a,x,i)=>add(a,mul(x,masses[i]/total)),[0,0,0]);for(let i=0;i<3;i++){r[i]=sub(r[i],com);v[i]=sub(v[i],momentum);}
+ const force=()=>r.map((ri,i)=>r.reduce((a,rj,j)=>{if(i===j)return a;const d=sub(rj,ri),R=norm(d);if(R<.0001)throw Error('Close collision: integration stopped.');return add(a,mul(d,MU*masses[j]/R**3));},[0,0,0]));
+ const energy=()=>{let e=0;for(let i=0;i<3;i++){e+=masses[i]*norm(v[i])**2/2;for(let j=i+1;j<3;j++)e-=MU*masses[i]*masses[j]/norm(sub(r[i],r[j]));}return e;};
+ const e0=energy(),points=[];let a=force(),t=0,maxDrift=0;const stride=Math.max(1,Math.ceil(duration/stepSize/1200));let j=0;
+ while(t<duration){const h=Math.min(stepSize,duration-t);for(let i=0;i<3;i++)r[i]=add(add(r[i],mul(v[i],h)),mul(a[i],h*h/2));const an=force();for(let i=0;i<3;i++)v[i]=add(v[i],mul(add(a[i],an[i]),h/2));a=an;t+=h;const drift=Math.abs((energy()-e0)/e0);maxDrift=Math.max(drift,maxDrift);if(j++%stride===0||t>=duration)points.push({t,r:r.map(x=>[...x]),drift});if(r.some(x=>!Number.isFinite(norm(x))||norm(x)>1000))throw Error('Runaway state: experiment stopped.');}
+ return {points,masses,maxDrift,steps:j,method:'Velocity Verlet',units:'AU, day, solar mass'};
+}
+export function solverArena({stepSize=4,orbits=3}={}){
+ if(!(stepSize>=.05&&stepSize<=50&&orbits>=1&&orbits<=20))throw Error('Use 0.05–50 day steps and 1–20 orbits');
+ const period=TAU/Math.sqrt(MU),duration=period*orbits,stride=Math.max(1,Math.ceil(duration/stepSize/1200)),rows=[],series=[];
+ for(const [method,color]of [['Euler','#e5a471'],['Heun','#75a9e8'],['RK4','#62dfc0'],['Verlet','#ad91ed']]){let r=[1,0,0],v=[0,Math.sqrt(MU),0],t=0,n=0,j=0,points=[],max=0;const start=performance.now();while(t<duration){const h=Math.min(stepSize,duration-t),s=step(r,v,h,method);r=s.r;v=s.v;t+=h;n+=s.evals;const drift=Math.abs((norm(v)**2/2-MU/norm(r)+MU/2)/(MU/2));max=Math.max(max,drift);if(j++%stride===0||t>=duration)points.push([t,Math.log10(Math.max(drift,1e-16))]);}const expected=[Math.cos(Math.sqrt(MU)*duration),Math.sin(Math.sqrt(MU)*duration),0];rows.push({method,error:norm(sub(r,expected)),drift:max,evals:n,ms:performance.now()-start});series.push({points,color,label:method});}return {rows,series};
+}
