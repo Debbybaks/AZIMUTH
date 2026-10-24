@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.vercel/
+.cache/
+*.log
+*.tmp
+.DS_Store
+playwright-report/
+test-results/
